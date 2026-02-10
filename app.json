@@ -13,17 +13,43 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mmraappana.iosexposensorsaskeleet",
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "Sovellus seuraa aktiivisuutta (askeleet) varmistaakseen, että olet liikkeellä ja kunnossa.",
+        "NSHealthUpdateUsageDescription": "Sovellus tallentaa aktiivisuustietoja paikalliseen lokiin seurantaa varten.",
+        "UIBackgroundModes": [
+          "audio",
+          "fetch",
+          "processing",
+          "audio",
+          "fetch",
+          "processing"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.mmraappana.iosexposensorsaskeleet"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "react-native-health"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c6ac2402-b66f-43de-b56f-ba5f104a18e4"
+      }
     }
   }
 }
