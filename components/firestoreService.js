@@ -70,7 +70,7 @@ export const tallennaLokiTietokantaan = async (teksti) => {
             { merge: true }
         );
 
-        console.log("Loki lisätty");
+        console.log("Loki lisätty tietokantaan");
 
     } catch (e) {
         console.log("Virhe lokin tallennuksessa", String(e));

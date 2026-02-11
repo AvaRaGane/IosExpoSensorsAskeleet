@@ -29,10 +29,10 @@ const fetchTime = () => {
 const writeAsyncLog = async (msg, events = false) => {
   try {
     if (events) {
-      const raw = await AsyncStorage.getItem('IOS_ALIVE_EVENTS');
+      const raw = await AsyncStorage.getItem('IOS_NUMB_OF_TRANSACTIONS');
       const earlierEvents = Number(raw) || 0;
       const newEvents = earlierEvents + 1;
-      await AsyncStorage.setItem('IOS_ALIVE_EVENTS', String(newEvents));
+      await AsyncStorage.setItem('IOS_NUMB_OF_TRANSACTIONS', String(newEvents));
     }
     const oldLog = JSON.parse((await AsyncStorage.getItem('IOS_ALIVE_LOG')) ?? '[]')
     if (oldLog.length > 30) oldLog.shift();
@@ -52,15 +52,20 @@ const BATTERY_STATES = {
 
 const checkBatterySOL = async () => {
   try {
+    console.log("[checkBatterySOL] aloitus")
     const currentState = await Battery.getBatteryStateAsync();
     const lastStateStr = await AsyncStorage.getItem('IOS_ALIVE_LAST_BATTERY_STATE');
     await AsyncStorage.setItem('IOS_ALIVE_LAST_BATTERY_STATE', String(currentState));
 
-    if (!lastStateStr) return false;
+    if (!lastStateStr) {
+      console.log("[checkBatterySOL] !lastStateStr")
+      return false;
+    }
 
     const lastState = parseInt(lastStateStr, 10);
 
     if (currentState === Battery.BatteryState.UNKNOWN || lastState === Battery.BatteryState.UNKNOWN) {
+      console.log("[checkBatterySOL] nykyinen tai edellinen tila UNKNOW")
       return false;
     }
 
@@ -68,6 +73,7 @@ const checkBatterySOL = async () => {
       state === Battery.BatteryState.CHARGING || state === Battery.BatteryState.FULL;
 
     if (isChargingOrFull(lastState) && isChargingOrFull(currentState)) {
+      console.log("[checkBatterySOL] latauksessa - täynnä")
       return false;
     }
 
@@ -83,7 +89,7 @@ const checkBatterySOL = async () => {
     }
 
   } catch (e) {
-    console.log(e);
+    console.log("[checkBatterySOL] error", e);
   }
   return false;
 }
@@ -95,28 +101,35 @@ const permissions = {
 };
 
 const getTodaysStepCount = () => {
-  return new Promise((resolve, reject) => {
-    AppleHealthKit.initHealthKit(permissions, (error) => {
-      if (error) {
-        reject(error);
+  return new Promise((resolve) => {
+    // 1. Määritellään aikaväli (tämän päivän alku -> nyt)
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    console.log("askelia hakemassa, startday:", startOfDay.toISOString())
+    const options = {
+      startDate: startOfDay.toISOString(),
+      endDate: new Date().toISOString(),
+      includeManuallyAdded: true, // Lasketaanko käsin lisätyt askeleet mukaan?
+    };
+
+    // 2. Varmistetaan init (tämä on turvallista ajaa useasti, se tarkistaa vain luvat)
+    AppleHealthKit.initHealthKit(permissions, (initError) => {
+      if (initError) {
+        console.log("HealthKit init error askelten haussa:", initError);
+        resolve(0); // Palautetaan 0, jotta koodi jatkuu nätisti
         return;
       }
 
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const options = {
-        startDate: startOfDay.toISOString(),
-        endDate: new Date().toISOString(),
-      };
-
+      // 3. Haetaan askeleet
       AppleHealthKit.getStepCount(options, (err, results) => {
         if (err) {
-          reject(err);
+          console.log("Virhe askelten haussa:", err);
+          resolve(0);
           return;
         }
 
-        // results.value = päivän askelten summa
+        // 4. Palautetaan arvo (results.value) tai 0 jos tyhjä
+        console.log("HealthKit palautti:", results);
         resolve(results && results.value ? results.value : 0);
       });
     });
@@ -271,6 +284,7 @@ export default function App() {
   const [statusAlive, setStatusAlive] = useState(false)
   const [showUserSettings, setShowUserSettings] = useState(false)
   const [numbOfTransactions, setNumbOfTransactions] = useState(0)
+  const [numbOfSteps, setNumbOfSteps] = useState(0)
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -285,11 +299,11 @@ export default function App() {
       initNotifications()
       readSOL()
     }
-
   }, [user])
 
   useEffect(() => {
     setIsRunning(BackgroundService.isRunning());
+    console.log("useEffect [], seuranta:",BackgroundService.isRunning())
     fetchNumbOfTransactions().then(setNumbOfTransactions);
   }, [])
 
@@ -334,37 +348,32 @@ export default function App() {
 
   // startBackgroundService()
   const startBackgroundService = async () => {
+    console.log("startBackgroundService-functiossa")
     if (BackgroundService.isRunning()) {
+      console.log("BackgroundService.isRunning() true")
       setIsRunning(true);
       return
     }
+    console.log("BackgroundService.isRunning() false")
 
-    const startBackgroundService = async () => {
-      if (BackgroundService.isRunning()) {
-        setIsRunning(true);
-        return
+    AppleHealthKit.initHealthKit(permissions, async (error) => {
+      if (error) {
+        console.log("HealthKit error:", error);
+        Alert.alert("Virhe", "Terveystietojen (HealthKit) alustus epäonnistui. Tarkista oikeudet asetuksista.");
+        return;
       }
-      
-      AppleHealthKit.initHealthKit(permissions, async (error) => {
-        if (error) {
-          console.log("HealthKit error:", error);
-          Alert.alert("Virhe", "Terveystietojen (HealthKit) alustus epäonnistui. Tarkista oikeudet asetuksista.");
-          return;
-        }
-
-        try {
-          await BackgroundService.start(veryIntensiveTask, options);
-          await BackgroundService.updateNotification({ taskDesc: 'Seuranta päällä' });
-          setIsRunning(true);
-        } catch (e) {
-          console.log(e);
-          Alert.alert("Virhe", "Palvelu ei käynnistynyt: " + e.message);
-        }
-      });
-    }
-
+      console.log("initHealthKit ei erroria")
+      try {
+        await BackgroundService.start(veryIntensiveTask, options);
+        await BackgroundService.updateNotification({ taskDesc: 'Seuranta päällä' });
+        setIsRunning(true);
+        console.log("seuranta pitäisi olla päällä!")
+      } catch (e) {
+        console.log(e);
+        Alert.alert("Virhe", "Palvelu ei käynnistynyt: " + e.message);
+      }
+    });
   }
-
 
   const stopBackgroundService = async () => {
     await BackgroundService.stop();
@@ -372,6 +381,9 @@ export default function App() {
   }
 
   const fetchLog = async () => {
+    let askeleet = await getTodaysStepCount();
+    setNumbOfSteps(askeleet);
+    console.log("Askeleiden määrä", askeleet);
     fetchNumbOfTransactions().then(setNumbOfTransactions);
     const data = JSON.parse(
       (await AsyncStorage.getItem('IOS_ALIVE_LOG')) ?? '[]'
@@ -434,9 +446,9 @@ export default function App() {
     try {
       numb = parseInt(await AsyncStorage.getItem('IOS_NUMB_OF_TRANSACTIONS'));
     } catch (e) {
-      console.log(e)
+      console.log("fetchNumbOfTransactions ei onnistunut", e)
     }
-    console.log("fetchNumbOfTransactions", numb)
+    console.log("fetchNumbOfTransactions arvolla", numb)
     return numb;
   }
 
@@ -468,7 +480,7 @@ export default function App() {
               {statusAlive ? "✅ ELONMERKKI HAVAITTU" : "⏳ ETSITÄÄN..."}
             </Text>
             <Text style={{ fontSize: 12, color: '#666' }}>
-              "Akku ja liike aktiivisessa seurannassa. Tapahtumien määrä tänään {numbOfTransactions}"
+              "Akku ja liike aktiivisessa seurannassa. Tänään tapahtumia {numbOfTransactions} ja askelia {numbOfSteps}"
             </Text>
           </View>
         </View>
@@ -527,7 +539,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#F2F2F7' },
+  safeArea: { flex: 1, backgroundColor: '#F2F2F7', marginTop: 50 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   scrollContainer: { padding: 16, paddingBottom: 40 },
   card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
