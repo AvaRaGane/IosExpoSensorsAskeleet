@@ -248,7 +248,7 @@ const veryIntensiveTask = async () => {
         targetMorning.setHours(8, 0, 0, 0);
         sleepMs = targetMorning.getTime() - now.getTime();
         isAliveToday = false;
-        await AsyncStorage.setItem('IS_ALIVE_TODAY', 'false');
+        await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'false');
       }
       // Nukkumissilmukka
       if (sleepMs < 60000) sleepMs = 60000;
