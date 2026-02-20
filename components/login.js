@@ -7,6 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const Login = () => {
     const [etunimi, setEtunimi] = useState("")
     const [sukunimi, setSukunimi] = useState("")
+    const [phone, setPhone] = useState("")
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [showRegister, setShowRegister] = useState(false)
@@ -30,8 +31,9 @@ const Login = () => {
         if (isRegDisabled) return;
         try {
             const res = await createUserWithEmailAndPassword(auth, email, password);
-            AsyncStorage.setItem("etunimi", etunimi);
-            AsyncStorage.setItem("sukunimi", sukunimi);
+            await AsyncStorage.setItem("etunimi", etunimi);
+            await AsyncStorage.setItem("sukunimi", sukunimi);
+            await AsyncStorage.setItem("phone", phone);
             console.log("Rekisteröitynyt UID:", res.user.uid);
             Alert.alert('Rekisteröinti onnistui', 'Käyttäjä on luotu onnistuneesti!', [
                 { text: 'OK', onPress: () => console.log('OK Pressed') },
@@ -64,42 +66,58 @@ const Login = () => {
 
     const sukunimiRef = useRef(null);
     const emailRef = useRef(null);
+    const phoneRef = useRef(null)
     const passwordRef = useRef(null);
     const secondPasswordRef = useRef(null);
 
     return (
         <View style={{ flex: 1 }}>
-
             <View style={styles.container}>
+                {/* Otsikko vaihtuu tilan mukaan */}
                 <Text style={styles.label}>
-                    {showRegister ? 'Rekisteröidy' : 'Kirjaudu sisään'}
+                    {showRegister ? 'Luo uusi tili' : 'Kirjaudu sisään'}
                 </Text>
 
-                <Switch
-                    trackColor={{ false: '#ccc', true: '#81b0ff' }}
-                    thumbColor="#fff"
-                    onValueChange={toggleRegister}
-                    value={showRegister}
+                {/* YKSI painike, jonka teksti vaihtuu. Tämä on vakaampi kuin kaksi eri painiketta. */}
+                <Button
+                    title={showRegister ? "Onko sinulla jo tili? Kirjaudu" : "Ei vielä tiliä? Rekisteröidy"}
+                    onPress={toggleRegister}
                 />
 
-                {showRegister ? (<><Text  >Etunimi</Text>
-                    <TextInput
-                        onChangeText={setEtunimi}
-                        value={etunimi}
-                        style={styles.input}
-                        returnKeyType='next'
-                        onSubmitEditing={() => sukunimiRef.current?.focus()} />
-                    <Text  >Sukunimi</Text>
-                    <TextInput
-                        ref={sukunimiRef}
-                        onChangeText={setSukunimi}
-                        value={sukunimi}
-                        style={styles.input}
-                        returnKeyType='next'
-                        onSubmitEditing={() => emailRef.current?.focus()} />
-                </>) : (<></>)
-                }
-                <Text  >Sähköposti</Text>
+                {/* Renderöidään lisäkentät vain jos showRegister on true */}
+                {showRegister && (
+                    <View style={{ alignItems: 'center' }}>
+                        <Text>Etunimi</Text>
+                        <TextInput
+                            onChangeText={setEtunimi}
+                            value={etunimi}
+                            style={styles.input}
+                            returnKeyType='next'
+                            onSubmitEditing={() => sukunimiRef.current?.focus()}
+                        />
+                        <Text>Sukunimi</Text>
+                        <TextInput
+                            ref={sukunimiRef}
+                            onChangeText={setSukunimi}
+                            value={sukunimi}
+                            style={styles.input}
+                            returnKeyType='next'
+                            onSubmitEditing={() => phoneRef.current?.focus()}
+                        />
+                        <Text>Puhelinnumero</Text>
+                        <TextInput
+                            ref={phoneRef}
+                            onChangeText={setPhone}
+                            value={phone}
+                            style={styles.input}
+                            keyboardType='phone-pad'
+                            onSubmitEditing={() => emailRef.current?.focus()}
+                        />
+                    </View>
+                )}
+
+                {/* Nämä kentät näkyvät aina */}
+                <Text>Sähköposti</Text>
                 <TextInput
                     ref={emailRef}
                     onChangeText={setEmail}
@@ -107,74 +125,45 @@ const Login = () => {
                     style={styles.input}
                     keyboardType='email-address'
                     autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType='next'
-                    onSubmitEditing={() => passwordRef.current?.focus()} />
-                <Text  >Salasana</Text>
+                    onSubmitEditing={() => passwordRef.current?.focus()}
+                />
+
+                <Text>Salasana</Text>
                 <TextInput
                     ref={passwordRef}
                     onChangeText={setPassword}
                     value={password}
                     style={styles.input}
                     secureTextEntry
-                    returnKeyType={showRegister ? 'next' : 'done'}
                     onSubmitEditing={() => {
                         if (showRegister) {
-                            if (!isRegDisabled) {
-                                secondPasswordRef.current?.focus();
-                            }
+                            secondPasswordRef.current?.focus();
                         } else {
-                            if (!isLoginDisabled) {
-                                kirjaudu();
-                            }
+                            kirjaudu();
                         }
                     }}
                 />
 
-                {password.length > 0 && password.length < 7 && (
-                    <Text style={{ color: 'red' }}>
-                        Salasanan tulee olla vähintään 7 merkkiä
-                    </Text>
-                )}
-                {showRegister ? (<>
-                    <Text  >Salasana uudestaan</Text>
-                    <TextInput
-                        ref={secondPasswordRef}
-                        onChangeText={setSecondPassword}
-                        value={secondPassword}
-                        style={styles.input}
-                        secureTextEntry
-                        onSubmitEditing={() => {
-                            if (!isRegDisabled) {
-                                rekisteroidy();
-                            } else {
-                                Alert.alert('Täytä kaikki kentät oikein');
-                            }
-                        }}
-                    />
-                    {secondPassword.length > 0 && secondPassword !== password && (
-                        <Text style={{ color: 'red' }}>Salasanat eivät täsmää</Text>
-                    )}
-                    {isRegDisabled && (
-                        <Text style={{ color: 'red' }}>
-                            Täytä kaikki kohdat
-                        </Text>
-                    )}
-                    <Button title="Rekisteröidy" onPress={rekisteroidy} disabled={isRegDisabled} />
-                </>
-                ) : (<>
-                    {isLoginDisabled && (
-                        <Text style={{ color: 'red' }}>
-                            Täytä kaikki kohdat
-                        </Text>
-                    )}
+                {/* Rekisteröinnin vahvistus tai kirjautumisnappi */}
+                {showRegister ? (
+                    <>
+                        <Text>Salasana uudestaan</Text>
+                        <TextInput
+                            ref={secondPasswordRef}
+                            onChangeText={setSecondPassword}
+                            value={secondPassword}
+                            style={styles.input}
+                            secureTextEntry
+                            onSubmitEditing={() => !isRegDisabled && rekisteroidy()}
+                        />
+                        <Button title="Rekisteröidy" onPress={rekisteroidy} disabled={isRegDisabled} />
+                    </>
+                ) : (
                     <Button title="Kirjaudu" onPress={kirjaudu} disabled={isLoginDisabled} />
-                </>)}
-
-
+                )}
             </View>
         </View>
-    )
+    );
 }
 
 const styles = StyleSheet.create({

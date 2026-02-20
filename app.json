@@ -13,16 +13,15 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
+      "googleServicesFile": "./GoogleService-Info.plist",
       "supportsTablet": true,
       "bundleIdentifier": "com.mmraappana.iosexposensorsaskeleet",
       "infoPlist": {
         "NSHealthShareUsageDescription": "Sovellus seuraa aktiivisuutta (askeleet) varmistaakseen, että olet liikkeellä ja kunnossa.",
         "NSHealthUpdateUsageDescription": "Sovellus tallentaa aktiivisuustietoja paikalliseen lokiin seurantaa varten.",
+        "NSContactsUsageDescription": "Sovellus tarvii pääsyn yhteystietoihisi, jotta voit valita hätäyhteyshenkilön.",
         "UIBackgroundModes": [
-          "audio",
-          "fetch",
-          "processing",
-          "audio",
+          "remote-notification",
           "fetch",
           "processing"
         ],
@@ -44,12 +43,36 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "react-native-health"
+      "react-native-health",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#ffffff"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static",
+            "newArchEnabled": false
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
         "projectId": "c6ac2402-b66f-43de-b56f-ba5f104a18e4"
       }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/c6ac2402-b66f-43de-b56f-ba5f104a18e4"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
     }
   }
 }

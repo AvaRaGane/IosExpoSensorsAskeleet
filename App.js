@@ -1,4 +1,4 @@
-import { ActivityIndicator, Alert, Button, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Button, Modal, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import UserSettings from './components/userSettings';
 import Login from './components/login';
 import { useEffect, useState } from 'react';
@@ -7,10 +7,91 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from './components/firebase';
+import { auth, db } from './components/firebase';
 import * as Battery from 'expo-battery';
 import AppleHealthKit from 'react-native-health';
-import BackgroundService from 'react-native-background-actions';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import Toast from 'react-native-toast-message';
+import messaging from '@react-native-firebase/messaging';
+
+// Apufunktio: Odotetaan että Firebase Auth ehtii herätä
+const odotaKayttajaa = () => {
+  return new Promise((resolve) => {
+    if (auth.currentUser) {
+      resolve(auth.currentUser);
+      return;
+    }
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      unsubscribe();
+      resolve(user);
+    });
+  });
+};
+
+// Firebase taustakuuntelija
+messaging().setBackgroundMessageHandler(async remoteMessage => {
+  if (remoteMessage.data && remoteMessage.data.task === "background-fetch-task") {
+    const nowStr = new Date().toLocaleTimeString();
+
+    // 1. Haetaan vanha loki ja alustetaan currentLog
+    const oldDebug = await AsyncStorage.getItem('DEBUG_SILENT_PUSH') || '';
+    let currentLog = oldDebug + `\n[${nowStr}] Herätys (Firebase)!`;
+
+    // Tallennetaan heti ensimmäinen herätysmerkintä
+    await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+
+    try {
+      // 1. ODOTETAAN KÄYTTÄJÄÄ ENNEN TIETOKANTAKUTSUJA
+      const user = await odotaKayttajaa();
+      if (!user) {
+        currentLog += `\n[${nowStr}] ❌ Virhe: Ei Auth-käyttäjää taustalla.`;
+        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+        return;
+      }
+
+      await tallennaLokiTietokantaan("Havaittu: Turvatarkistus (Push)");
+
+      // 2. TARKISTETAAN LIIKE/AKKU
+      const batteryActive = await checkBatterySOL();
+
+      if (batteryActive) {
+        await tallennaLokiTietokantaan(`Havaittu: Muutos akun tilassa`);
+        currentLog += `\n[${nowStr}] Havaittu: Muutos akun tilassa`;
+        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+
+        //await tallennaSOL();
+        //await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'true');
+      } else {
+        await tallennaLokiTietokantaan(`Havaittu: Ei muutoksia akun tilassa, tarkistetaan askeleet`);
+        currentLog += `\n[${nowStr}] Havaittu: Ei muutoksia akun tilassa, tarkistetaan askeleet`;
+        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+
+        const steps = await getTodaysStepCount();
+        if (steps > 10) {
+          //await tallennaSOL();
+          //await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'true');
+
+          await tallennaLokiTietokantaan(`Havaittu: Liike (${steps})`);
+          currentLog += `\n[${nowStr}] Havaittu: Liike (${steps})`; // Sulku korjattu
+          await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+        } else {
+          await tallennaLokiTietokantaan(`Havaittu: Ei tarpeeksi askelia (${steps}), uusi tarkistus myöhemmin`);
+          currentLog += `\n[${nowStr}] Havaittu: Ei tarpeeksi askelia (${steps}), uusi tarkistus myöhemmin`;
+          await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+        }
+      }
+    } catch (e) {
+      console.error("Task error:", e);
+      await tallennaLokiTietokantaan(`CRASH: ${e.message}`);
+
+      currentLog += `\n[${nowStr}] CRASH: ${e.message}`;
+      await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
+    }
+  } else {
+    console.log("Saatiin muu taustaviesti, ei tehdä turvatarkistusta:", remoteMessage);
+  }
+});
+
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -18,14 +99,22 @@ Notifications.setNotificationHandler({
     shouldPlaySound: false,
     shouldSetBadge: false,
   }),
+  handleSuccess: async (notificationId) => {
+    console.log("Taustaviesti käsitelty onnistuneesti:", notificationId);
+  },
+  handleError: async (notificationId, error) => {
+    console.warn("Virhe taustaviestin käsittelyssä:", error);
+  }
 });
 
+// Apufunktio ajan hakemiseen
 const fetchTime = () => {
   const now = new Date();
   const pad = (n) => n < 10 ? '0' + n : n;
   return `${pad(now.getDate())}.${pad(now.getMonth() + 1)} klo ${pad(now.getHours())}.${pad(now.getMinutes())}`;
 }
 
+// Apufunktio logituksen kirjoittamista varten
 const writeAsyncLog = async (msg, events = false) => {
   try {
     if (events) {
@@ -43,6 +132,7 @@ const writeAsyncLog = async (msg, events = false) => {
   }
 }
 
+// Akun tilat
 const BATTERY_STATES = {
   [Battery.BatteryState.UNKNOWN]: 'UNKNOWN (0)',
   [Battery.BatteryState.UNPLUGGED]: 'UNPLUGGED (1)',
@@ -50,6 +140,7 @@ const BATTERY_STATES = {
   [Battery.BatteryState.FULL]: 'FULL (3)',
 };
 
+// Funktio akun tilanmuutoksen tarkistuksesta
 const checkBatterySOL = async () => {
   try {
     console.log("[checkBatterySOL] aloitus")
@@ -57,15 +148,11 @@ const checkBatterySOL = async () => {
     const lastStateStr = await AsyncStorage.getItem('IOS_ALIVE_LAST_BATTERY_STATE');
     await AsyncStorage.setItem('IOS_ALIVE_LAST_BATTERY_STATE', String(currentState));
 
-    if (!lastStateStr) {
-      console.log("[checkBatterySOL] !lastStateStr")
-      return false;
-    }
+    if (!lastStateStr) return false;
 
     const lastState = parseInt(lastStateStr, 10);
 
     if (currentState === Battery.BatteryState.UNKNOWN || lastState === Battery.BatteryState.UNKNOWN) {
-      console.log("[checkBatterySOL] nykyinen tai edellinen tila UNKNOW")
       return false;
     }
 
@@ -73,16 +160,13 @@ const checkBatterySOL = async () => {
       state === Battery.BatteryState.CHARGING || state === Battery.BatteryState.FULL;
 
     if (isChargingOrFull(lastState) && isChargingOrFull(currentState)) {
-      console.log("[checkBatterySOL] latauksessa - täynnä")
       return false;
     }
 
     if (lastState !== currentState) {
       const fromName = BATTERY_STATES[lastState] || lastState;
       const toName = BATTERY_STATES[currentState] || currentState;
-
       const msg = `BatterySOL: ${fromName} -> ${toName} (User is alive)`;
-
       console.log(msg);
       await writeAsyncLog(msg, true);
       return true;
@@ -94,296 +178,261 @@ const checkBatterySOL = async () => {
   return false;
 }
 
-const permissions = {
+
+const healthKitOptions = {
   permissions: {
     read: [AppleHealthKit.Constants.Permissions.StepCount],
   },
 };
 
+// Funktio askelmäärän hakuun
 const getTodaysStepCount = () => {
   return new Promise((resolve) => {
-    // 1. Määritellään aikaväli (tämän päivän alku -> nyt)
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-    console.log("askelia hakemassa, startday:", startOfDay.toISOString())
-    const options = {
-      startDate: startOfDay.toISOString(),
-      endDate: new Date().toISOString(),
-      includeManuallyAdded: true, // Lasketaanko käsin lisätyt askeleet mukaan?
-    };
 
-    // 2. Varmistetaan init (tämä on turvallista ajaa useasti, se tarkistaa vain luvat)
-    AppleHealthKit.initHealthKit(permissions, (initError) => {
+    // HealthKitin init on hyvä tehdä aina ennen hakua taustalla varmuuden vuoksi
+    AppleHealthKit.initHealthKit(healthKitOptions, (initError) => {
       if (initError) {
-        console.log("HealthKit init error askelten haussa:", initError);
-        resolve(0); // Palautetaan 0, jotta koodi jatkuu nätisti
+        console.log("HealthKit init error:", initError);
+        resolve(0);
         return;
       }
 
-      // 3. Haetaan askeleet
+      const options = {
+        startDate: startOfDay.toISOString(),
+        endDate: new Date().toISOString(),
+        includeManuallyAdded: true,
+      };
+
       AppleHealthKit.getStepCount(options, (err, results) => {
         if (err) {
           console.log("Virhe askelten haussa:", err);
           resolve(0);
           return;
         }
-
-        // 4. Palautetaan arvo (results.value) tai 0 jos tyhjä
-        console.log("HealthKit palautti:", results);
         resolve(results && results.value ? results.value : 0);
       });
     });
   });
 }
 
-const sendWarningNotification = async () => {
-  await writeAsyncLog("Warning notification sent!");
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title: "Oletko kunnossa?",
-      body: "Emme ole havainneet liikettä tänään. Kuittaa elonmerkki sovelluksessa!",
-      sound: 'default',
-    },
-    trigger: null,
-
-  })
-}
-
-const veryIntensiveTask = async () => {
-  console.log("[Tausta] Palvelu käynnistyi...");
-  await writeAsyncLog("Taustapalvelu käynnistetty");
-
-  let isAliveToday = false;
-
-  const raw = await AsyncStorage.getItem('IOS_MORNING_START_HOUR');
-  const morningStartHour = raw !== null ? Number(raw) : NaN;
-  const startHour = Number.isInteger(morningStartHour) ? morningStartHour : 8;
-
-  const sleepUntilMorning = async () => {
-    const now = new Date();
-    const targetMorning = new Date();
-
-    targetMorning.setDate(targetMorning.getDate() + 1);
-    targetMorning.setHours(startHour, 0, 0, 0);
-
-    const sleepMs = targetMorning.getTime() - now.getTime();
-
-    isAliveToday = false;
-    await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'false');
-    await writeAsyncLog(
-      `Hyvää yötä. Herätys ${Math.round(sleepMs / 1000 / 60 / 60)}h päästä.`
-    )
-    await tallennaLokiTietokantaan(`Hyvää yötä. Herätys ${Math.round(sleepMs / 1000 / 60 / 60)}h päästä.`);
-    return sleepMs;
-  }
-
-  await new Promise(async (resolve) => {
-    for (let i = 0; BackgroundService.isRunning(); i++) {
-      const lastSync = await AsyncStorage.getItem('IOS_LAST_DAY_SYNC');
-      const todayStr = new Date().toDateString();
-
-      const now = new Date();
-      const currentHour = now.getHours();
-      let sleepMs = 15 * 60 * 1000;
-
-      if (currentHour === 20) {
-        console.log("[Tausta] Klo 20 tarkistus")
-        await writeAsyncLog("Klo 20 tarkistus");
-
-        const eventsRaw = await AsyncStorage.getItem('IOS_ALIVE_EVENTS');
-        const eventsToday = Number(eventsRaw) || 0;
-
-        if (eventsToday > 0) {
-          if (lastSync !== todayStr) {
-            await tallennaSOL("automaatti");
-            await AsyncStorage.setItem('IOS_LAST_DAY_SYNC', todayStr);
-            await writeAsyncLog(`Tallennettu tietokantaan. Päivän havaintoja yhteensä ${eventsToday}`);
-            await tallennaLokiTietokantaan(`SOL tallennettu tietokantaan. Päivän havaintoja yhteensä ${eventsToday}`)
-            await AsyncStorage.setItem('IOS_ALIVE_LAST_BATTERY_STATE', "0");
-            await AsyncStorage.setItem('IOS_ALIVE_EVENTS', "0");
-          }
-          sleepMs = await sleepUntilMorning();
-        } else {
-          await sendWarningNotification();
-          await AsyncStorage.setItem('IOS_ALIVE_LAST_BATTERY_STATE', "0");
-          await AsyncStorage.setItem('IOS_ALIVE_EVENTS', "0");
-          sleepMs = await sleepUntilMorning();
-        }
-      }
-
-      else if (currentHour >= startHour && currentHour < 20) {
-        console.log("Etsitään elonmerkkejä...");
-
-        const batteryActive = await checkBatterySOL()
-        if (batteryActive) {
-          isAliveToday = true;
-          await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'true');
-          await writeAsyncLog("Havaittu: Akku", isAliveToday);
-          await tallennaLokiTietokantaan("Havaittu: Akku");
-
-          sleepMs = 15 * 60 * 1000;
-
-        } else {
-          await tallennaLokiTietokantaan("Ei havaittu muutoksia akun tilassa, seurataan liikettä 30s");
-
-          const motionActive = await getTodaysStepCount();
-
-          if (motionActive > 10) {
-            isAliveToday = true;
-            await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'true');
-            await writeAsyncLog("Havaittu: Liike", isAliveToday);
-            await tallennaLokiTietokantaan("Havaittu: Liike");
-
-            sleepMs = 15 * 60 * 1000;
-
-          } else {
-            await tallennaLokiTietokantaan("Ei havaittu liikettä, nukutaan 15min ja mitataan uudestaan");
-            sleepMs = 15 * 60 * 1000;
-          }
-        }
-      }
-      else {
-        const targetMorning = new Date();
-        if (currentHour > 8) targetMorning.setDate(targetMorning.getDate() + 1);
-        targetMorning.setHours(8, 0, 0, 0);
-        sleepMs = targetMorning.getTime() - now.getTime();
-        isAliveToday = false;
-        await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'false');
-      }
-      // Nukkumissilmukka
-      if (sleepMs < 60000) sleepMs = 60000;
-      const checkInterval = 10000;
-      let sleptTime = 0;
-      while (sleptTime < sleepMs) {
-        if (!BackgroundService.isRunning()) return;
-        await new Promise(r => setTimeout(r, checkInterval));
-        sleptTime += checkInterval;
-      }
-    }
-  })
-}
-
-const options = {
-  taskName: 'ElossaStepCounter',
-  taskTitle: 'Elossa-seuranta',
-  taskDesc: 'Seuranta aktiivinen',
-  taskIcon: {
-    name: 'ic_launcher',
-    type: 'mipmap',
-  },
-  color: '#ff00ff',
-};
-
-
 export default function App() {
-  const [isRunning, setIsRunning] = useState(false)
-  const [SOL, setSOL] = useState(null)
-  const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [logi, setLogi] = useState([])
-  const [statusAlive, setStatusAlive] = useState(false)
-  const [showUserSettings, setShowUserSettings] = useState(false)
-  const [numbOfTransactions, setNumbOfTransactions] = useState(0)
-  const [numbOfSteps, setNumbOfSteps] = useState(0)
+  const [SOL, setSOL] = useState(null);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [logi, setLogi] = useState([]);
+  const [statusAlive, setStatusAlive] = useState(false);
+  const [showUserSettings, setShowUserSettings] = useState(false);
+  const [numbOfTransactions, setNumbOfTransactions] = useState(0);
+  const [numbOfSteps, setNumbOfSteps] = useState(0);
+  const [modal1Visible, setModal1Visible] = useState(false);
+  const [modal2Visible, setModal2Visible] = useState(false);
+  const [modal3Visible, setModal3Visible] = useState(false);
+  const [storageData, setStorageData] = useState({});
+  const [monitoring, setMonitoring] = useState(null)
+  const [subscribtion, setSubscribtion] = useState(false)
 
+  // Kuunnellaan käyttäjän tilaa
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser ? currentUser : null);
       setLoading(false);
-    })
+    });
     return unsubscribe;
-  }, [])
+  }, []);
+
+  // Kuunnellaan notifikaatioita etualalla
+  useEffect(() => {
+    const unsubscribe = messaging().onMessage(async remoteMessage => {
+      // Jos kyseessä on Firebase Consolen testiviesti (siinä on notification-kenttä)
+      if (remoteMessage.notification) {
+        Alert.alert(remoteMessage.notification.title, remoteMessage.notification.body);
+      }
+
+      // Jos viesti on meidän palvelimen lähettämä hiljainen "Turvatarkistus"
+      if (remoteMessage.data && remoteMessage.data.task === "background-fetch-task") {
+        tallennaLokiTietokantaan("Turvatarkistus testi (Etuala)");
+        const nowStr = new Date().toLocaleTimeString();
+        const oldDebug = await AsyncStorage.getItem('DEBUG_SILENT_PUSH') || '';
+        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', oldDebug + `\n[${nowStr}] Turvatarkistus testi (Etuala)`);
+
+        // Poistetaan mahdolliset häiriöt ruudulta
+        await Notifications.dismissAllNotificationsAsync();
+      }
+    });
+
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     if (user) {
-      initNotifications()
-      readSOL()
+      registerForPushNotifications();
+      readSOL();
+      checkFirstTimeInit();
     }
   }, [user])
 
   useEffect(() => {
-    setIsRunning(BackgroundService.isRunning());
-    console.log("useEffect [], seuranta:",BackgroundService.isRunning())
     fetchNumbOfTransactions().then(setNumbOfTransactions);
   }, [])
 
-  const readSOL = async () => {
+  useEffect(() => {
+    const fetchSubAndMonitoringStates = async () => {
+      const monitorState = await AsyncStorage.getItem('IOS_ACTIVATEMONITORING');
+      const subState = await AsyncStorage.getItem('IOS_SOLO_SUBSCRIBE');
+      setMonitoring(monitorState === 'true');
+      setSubscribtion(subState === 'true');
+    }
+    fetchSubAndMonitoringStates();
+  }, [])
+
+  useEffect(() => {
+    if (monitoring) {
+      activateMonitoring();
+    }
+  }, [monitoring])
+
+
+  const showStorageData = async () => {
+    const values = await AsyncStorage.multiGet([
+      'etunimi',
+      'IOS_ACTIVATEMONITORING',
+      'IOS_ALIVE_LAST_BATTERY_STATE',
+      'IOS_ALIVE_LOG',
+      'IOS_ICE_MSG',
+      'IOS_ICE_NAME',
+      'IOS_ICE_PHONE',
+      'IOS_IS_ALIVE_TODAY',
+      'IOS_NUMB_OF_TRANSACTIONS',
+      'IOS_SOLO_SUBSCRIBE',
+      'phone',
+      'SOLO_FIRST_TIME_INIT',
+      'sukunimi'
+    ]);
+
+    const data = Object.fromEntries(values);
+    setStorageData(data)
+    setModal3Visible(true)
+  };
+
+  const checkFirstTimeInit = async () => {
     try {
-      setSOL(await lueSOL());
+      const firstTimeInit = await AsyncStorage.getItem('SOLO_FIRST_TIME_INIT');
+      if (firstTimeInit !== "false") {
+        Alert.alert("Yhteystietojen asetukset", "Jotta sovellus toimii, täytyy sinun asettaa yhteystiedot avun saamista varten.");
+        setShowUserSettings(true);
+      }
+    } catch (e) {
+      console.log("checkFirstTimeInit error", e)
+    }
+  }
+
+  const readSOL = async () => {
+
+    try {
+      const solli = await lueSOL();
+      Toast.show({
+        type: 'success',
+        text1: `Haettu tietokannasta SOL: ${new Date(solli).toLocaleString()}`
+      });
+      setSOL(solli);
       const aliveStatus = await AsyncStorage.getItem('IOS_IS_ALIVE_TODAY');
       setStatusAlive(aliveStatus === 'true')
       fetchNumbOfTransactions().then(setNumbOfTransactions);
     } catch (e) {
       console.log(e);
+      Toast.show({
+        text1: `Ei onnistunut haku: ${e}`
+      });
     }
   }
 
   const saveSOL = async () => {
     try {
-      await tallennaSOL();
+      const stateOfSub = await AsyncStorage.getItem('IOS_SOLO_SUBSCRIBE');
+      if (stateOfSub === "true") {
+        await tallennaSOL();
+        await tallennaLokiTietokantaan("Tallennettu SOL tietokantaan manuaalisesti.")
+      } else {
+        setModal1Visible(true)
+      }
     } catch (e) {
       console.log(e)
     }
   }
 
-  const initNotifications = async () => {
+  const registerForPushNotifications = async () => {
+    // 1. Pyydetään luvat
+    const authStatus = await messaging().requestPermission();
+    const enabled =
+      authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+      authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+
+    if (!enabled) {
+      console.log('Ei lupaa ilmoituksiin!');
+      Alert.alert("Huomio", "Ilmoituslupa vaaditaan taustaseurantaa varten!");
+      return;
+    }
+
+    // 2. KRIITTINEN VAIHE iOS:LLE: Pakotetaan Applen natiivi rekisteröinti
     if (Platform.OS === 'ios') {
       try {
-        const { status } = await Notifications.requestPermissionsAsync({
-          ios: {
-            allowAlert: true,
-            allowSound: true,
-            allowBadge: true,
-          },
-        });
+        if (!messaging().isDeviceRegisteredForRemoteMessages) {
+          await messaging().registerDeviceForRemoteMessages();
+        }
 
-        if (status !== 'granted') {
-          console.log('Ilmoituslupaa ei myönnetty');
+        const apnsToken = await messaging().getAPNSToken();
+        console.log("🍏 APNs Token Applelta:", apnsToken);
+
+        if (!apnsToken) {
+          Alert.alert("Virhe", "Apple ei antanut laitetokenia! Push ei voi toimia.");
+          return;
         }
       } catch (e) {
-        console.log(e)
+        console.log("Virhe APNs rekisteröinnissä:", e);
       }
     }
-  }
 
-  // startBackgroundService()
-  const startBackgroundService = async () => {
-    console.log("startBackgroundService-functiossa")
-    if (BackgroundService.isRunning()) {
-      console.log("BackgroundService.isRunning() true")
-      setIsRunning(true);
-      return
+    // 3. Haetaan vasta nyt FIREBASEN token
+    const token = await messaging().getToken();
+
+    // 4. Tallenna token tietokantaan
+    if (user && user.uid) {
+      await setDoc(doc(db, "ios_users", user.uid), {
+        pushToken: token,
+        email: user.email || "ei_email",
+        updatedAt: new Date(),
+        last_SOL: serverTimestamp(),
+        merkkaaja: "Automaatti, tili luotu",
+        subscriber: false
+      }, { merge: true });
     }
-    console.log("BackgroundService.isRunning() false")
+  };
 
-    AppleHealthKit.initHealthKit(permissions, async (error) => {
+
+  const activateMonitoring = async () => {
+    console.log("Aktivoidaan seuranta (HealthKit luvat + Push Token)...");
+
+    // HealthKit luvat
+    AppleHealthKit.initHealthKit(healthKitOptions, async (error) => {
       if (error) {
-        console.log("HealthKit error:", error);
-        Alert.alert("Virhe", "Terveystietojen (HealthKit) alustus epäonnistui. Tarkista oikeudet asetuksista.");
+        Alert.alert("Virhe", "HealthKit alustus epäonnistui.");
         return;
       }
-      console.log("initHealthKit ei erroria")
-      try {
-        await BackgroundService.start(veryIntensiveTask, options);
-        await BackgroundService.updateNotification({ taskDesc: 'Seuranta päällä' });
-        setIsRunning(true);
-        console.log("seuranta pitäisi olla päällä!")
-      } catch (e) {
-        console.log(e);
-        Alert.alert("Virhe", "Palvelu ei käynnistynyt: " + e.message);
-      }
-    });
-  }
+      console.log("HealthKit OK");
 
-  const stopBackgroundService = async () => {
-    await BackgroundService.stop();
-    setIsRunning(false);
+      // 2.  Push Token (kutsuu uudestaan)
+      await registerForPushNotifications();
+
+      Alert.alert("Sinua seurataan!", "Palvelin tarkistaa elonmerkkejä taustalla. Mikäli emme havaitse niitä tai puhelimesi on sammunut, lähetämme sinulle ilmoituksen ennen hälyytystä.");
+    });
   }
 
   const fetchLog = async () => {
     let askeleet = await getTodaysStepCount();
     setNumbOfSteps(askeleet);
-    console.log("Askeleiden määrä", askeleet);
+
     fetchNumbOfTransactions().then(setNumbOfTransactions);
     const data = JSON.parse(
       (await AsyncStorage.getItem('IOS_ALIVE_LOG')) ?? '[]'
@@ -406,16 +455,21 @@ export default function App() {
     setLogi([])
   }
 
-  //userLogOut()
   const userLogOut = async () => {
     try {
-      if (BackgroundService.isRunning()) {
-        await BackgroundService.stop();
-        setIsRunning(false);
-      }
       await AsyncStorage.multiRemove([
         'IOS_IS_ALIVE_TODAY',
-        'IOS_LAST_DAY_SYNC'
+        'IOS_LAST_DAY_SYNC',
+        'etunimi',
+        'sukunimi',
+        'IOS_ICE_NAME',
+        'IOS_ICE_PHONE',
+        'IOS_ICE_MSG',
+        'SOLO_FIRST_TIME_INIT',
+        'IOS_NUMB_OF_TRANSACTIONS',
+        'IOS_ALIVE_LOG',
+        'IOS_ALIVE_LAST_BATTERY_STATE',
+        'SOLO_FIRST_TIME_INIT',
       ]);
 
       setSOL(null);
@@ -423,8 +477,6 @@ export default function App() {
       setStatusAlive(false)
 
       await kirjauduUlos();
-
-      console.log("uloskirjautuminen onnistui")
     } catch (e) {
       console.log(e)
     }
@@ -444,67 +496,198 @@ export default function App() {
   const fetchNumbOfTransactions = async () => {
     let numb = 0
     try {
-      numb = parseInt(await AsyncStorage.getItem('IOS_NUMB_OF_TRANSACTIONS'));
+      const val = await AsyncStorage.getItem('IOS_NUMB_OF_TRANSACTIONS');
+      numb = val ? parseInt(val) : 0;
     } catch (e) {
       console.log("fetchNumbOfTransactions ei onnistunut", e)
     }
-    console.log("fetchNumbOfTransactions arvolla", numb)
     return numb;
   }
 
+  const subscribeAutomation = async () => {
+    setModal2Visible(false)
+    await AsyncStorage.setItem('IOS_SOLO_SUBSCRIBE', 'true');
+    Alert.alert("Tilattu", "Onnittelut tilauksesta, voit muokata asetuksissa nyt halutessasi seurannan manuaaliksi.")
+  }
+
+  const secondModalButtonHandler = async () => {
+    await tallennaSOL();
+    await tallennaLokiTietokantaan("Tallennettu SOL tietokantaan manuaalisesti.");
+    setModal2Visible(false);
+  }
+
+  const confirmSubscribe = async () => {
+    await AsyncStorage.setItem('IOS_SOLO_SUBSCRIBE', 'true')
+    setSubscribtion(true);
+    setMonitoring(false);
+    Toast.show({
+      type: 'success',
+      text1: 'Rahat viety, tilaus tehty',
+      text2: 'Voit nyt valita automaattiseurannan ja manuaalin väliltä.'
+    });
+  }
+
+  const setMonitoringHandler = async () => {
+    setMonitoring(true)
+    await AsyncStorage.setItem('IOS_ACTIVATEMONITORING', 'true');
+    activateMonitoring()
+  }
+
+  const showDebugLog = async () => {
+    const log = await AsyncStorage.getItem('DEBUG_SILENT_PUSH');
+    Alert.alert("Silent Push Debug", log || "Ei lokimerkintöjä");
+  };
+
   if (loading) return <ActivityIndicator size="large" style={styles.loadingContainer} />
   if (!user) return <Login />;
-  if (showUserSettings) return <UserSettings setShowUserSettings={setShowUserSettings} />
+  if (showUserSettings) return <UserSettings setShowUserSettings={setShowUserSettings} monitoring={monitoring} setMonitoring={setMonitoring} subscribtion={subscribtion} setSubscribtion={setSubscribtion} confirmSubscribe={confirmSubscribe} />
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
-        <Button title="Asetukset" onPress={() => setShowUserSettings(true)} />
+        <Button title="ASETUKSET" onPress={() => setShowUserSettings(true)} />
+        <Modal animationType="slide"
+          transparent={false}
+          visible={modal1Visible}
+          onRequestClose={() => { setModal1Visible(!modal1Visible); }}
+        >
+          <View style={{ flex: 1, marginTop: 50, padding: 20, backgroundColor: '#a2cbf5' }}>
+            <Text>Tämän modalin tilalle tulee mainos</Text>
+
+
+            <Button
+              title="Sulje"
+              onPress={() => {
+                setModal1Visible(false);
+                setTimeout(() => {
+                  setModal2Visible(true);
+                }, 300);
+              }}
+            />
+          </View>
+        </Modal>
+
+        <Modal animationType="slide"
+          transparent={false}
+          visible={modal2Visible}
+          onRequestClose={() => { setModal2Visible(!modal2Visible); }}
+        >
+          <View style={{ flex: 1, marginTop: 50, padding: 20, backgroundColor: '#5df071' }}>
+            <Text>Tässä taas kerrotaan että mainokset on ärsyttäviä ja ostamalla tilauksen pääsee niistä eroon.</Text>
+
+            <Button title="Tilaa" onPress={subscribeAutomation} />
+            <Button title="Lähetä elonmerkki" onPress={secondModalButtonHandler}
+            />
+          </View>
+        </Modal>
+        <Modal animationType="slide"
+          transparent={false}
+          visible={modal3Visible}
+          onRequestClose={() => { setModal3Visible(!modal3Visible); }}
+        >
+          <View style={{ flex: 1, marginTop: 50, padding: 20, backgroundColor: '#e79f60' }}>
+            <Text>AsyncStoragen tiedot</Text>
+            <ScrollView style={{ maxHeight: 400 }}>
+              <Text style={styles.modalText}>
+                {JSON.stringify(storageData, null, 2)}
+              </Text>
+            </ScrollView>
+            <Button
+              title="Sulje"
+              onPress={() => setModal3Visible(false)}
+            />
+          </View>
+        </Modal>
         {/* --- STATUS KORTTI --- */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Päivän tilanne</Text>
-          <View style={[styles.statusBadge, isRunning ? styles.bgGreen : styles.bgRed]}>
-            <Text style={styles.statusText}>
-              {isRunning ? "SEURANTA PÄÄLLÄ" : "SEURANTA POIS"}
-            </Text>
-          </View>
 
           <View style={styles.infoRow}>
             <Text style={styles.label}>Viimeisin tallennus:</Text>
             <Text style={styles.value}>{SOL ? new Date(SOL).toLocaleString() : '-'}</Text>
           </View>
+          {monitoring ? (
+            <View
+              style={[
+                styles.statusBadge,
+                {
+                  marginTop: 10,
+                  backgroundColor: statusAlive ? '#d4edda' : '#fff3cd'
+                }
+              ]}
+            >
+              <>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#333' }}>
+                  {statusAlive ? "✅ ELONMERKKI HAVAITTU" : "⏳ ETSITÄÄN..."}
+                </Text>
 
-          {/* UUSI: Näytetään selkeästi onko havainto tehty */}
-          <View style={[styles.statusBadge, { marginTop: 10, backgroundColor: statusAlive ? '#d4edda' : '#fff3cd' }]}>
-            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#333' }}>
-              {statusAlive ? "✅ ELONMERKKI HAVAITTU" : "⏳ ETSITÄÄN..."}
-            </Text>
-            <Text style={{ fontSize: 12, color: '#666' }}>
-              "Akku ja liike aktiivisessa seurannassa. Tänään tapahtumia {numbOfTransactions} ja askelia {numbOfSteps}"
-            </Text>
-          </View>
+                <Text style={{ fontSize: 12, color: '#666', marginTop: 5 }}>
+                  Tänään tapahtumia: {numbOfTransactions} | Askelia: {numbOfSteps}
+                </Text>
+              </>
+            </View>
+          ) : subscribtion ? (
+            <Button
+              title="Aseta automaattiseuranta päälle"
+              onPress={setMonitoringHandler}
+            />
+          ) : (
+            <Button
+              title="Tee tilaus"
+              onPress={confirmSubscribe}
+            />
+          )}
         </View>
 
         {/* --- PÄÄTOIMINNOT --- */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Hallinta</Text>
+          <Text style={{ marginBottom: 10, color: '#666' }}>
+            {monitoring ? "Seuranta on automaattisesti päällä, jos Push-ilmoitukset on sallittu." : "Lähetä elonmerkki manuaalisesti päivittäin, jotta tiedämme sinun olevan turvassa."}
+          </Text>
+
           <View style={styles.buttonRow}>
             <View style={styles.flexBtn}>
-              <Button title="Käynnistä" onPress={startBackgroundService} disabled={isRunning} />
-            </View>
-            <View style={styles.flexBtn}>
-              <Button title="Sammuta" color="red" onPress={stopBackgroundService} disabled={!isRunning} />
+              {subscribtion ? (
+                monitoring ? (
+                  <Text>Seuranta päällä</Text>
+                ) : (
+                  <Button
+                    title="Tarkista Luvat & Aktivoi"
+                    onPress={setMonitoringHandler}
+                  />
+                )
+              ) : (
+                <Button
+                  title="Lähetä elonmerkki manuaalisesti"
+                  onPress={saveSOL}
+                />
+              )}
+
             </View>
           </View>
+
           <View style={{ marginTop: 10 }}>
             <Button title="Kirjaudu ulos" color="#555" onPress={logOutConfirm} />
           </View>
+
           <View style={[styles.buttonRow, { marginTop: 10 }]}>
             <View style={styles.flexBtn}>
               <Button title="Päivitä näkymä" onPress={fetchLog} color="#6c757d" />
             </View>
             <View style={styles.flexBtn}>
-              <Button title="Pakota DB tallennus" onPress={saveSOL} color="#6c757d" />
+              {monitoring ? (
+                <Button
+                  title="Lähetä elonmerkki manuaalisesti"
+                  onPress={saveSOL}
+                  color="#6c757d"
+                />
+              ) : (
+                <Button
+                  title="Tee tilaus"
+                  onPress={confirmSubscribe}
+                />
+              )}
             </View>
           </View>
         </View>
@@ -532,7 +715,10 @@ export default function App() {
             </View>
           )}
         </View>
-
+        <Button title="Näytä StorageData" onPress={showStorageData} />
+        <Button title="Hae viimeisin SOL" onPress={readSOL} />
+        <Button title="Lue Debug-loki" color="red" onPress={showDebugLog} />
+        <Toast />
       </ScrollView>
     </SafeAreaView>
   );

@@ -13,9 +13,9 @@ export const tallennaSOL = async (merkkaaja = "manuaali") => {
         const nimi = `${etunimi ?? ''} ${sukunimi ?? ''}`.trim();
         await setDoc(
 
-            doc(db, 'IOS_SOLLIT', uid),
+            doc(db, 'ios_users', uid),
             {
-                last_SOL: serverTimestamp(),
+                last_SOL: new Date().toISOString(),
                 merkkaaja,
                 nimi
             },
@@ -33,7 +33,7 @@ export const lueSOL = async () => {
         const uid = auth.currentUser?.uid;
         if (!uid) throw new Error('Ei kirjautunutta käyttäjää');
 
-        const snap = await getDoc(doc(db, 'IOS_SOLLIT', uid));
+        const snap = await getDoc(doc(db, 'ios_users', uid));
         if (!snap.exists()) {
             console.log("Ei tietoja tietokannassa");
             return null;
@@ -55,13 +55,12 @@ export const tallennaLokiTietokantaan = async (teksti) => {
         const sukunimi = await AsyncStorage.getItem('sukunimi');
         const nimi = `${etunimi ?? ''} ${sukunimi ?? ''}`.trim();
 
-        const ref = doc(db, 'IOS_LOKI_SOLLIT', uid);
+        const ref = doc(db, 'ios_users', uid);
 
         await setDoc(
             ref,
             {
                 nimi,
-                aikaleima: serverTimestamp(),
                 lokit: arrayUnion({
                     aika: new Date().toISOString(),
                     teksti
