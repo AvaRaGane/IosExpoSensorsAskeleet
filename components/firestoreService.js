@@ -15,7 +15,7 @@ export const tallennaSOL = async (merkkaaja = "manuaali") => {
 
             doc(db, 'ios_users', uid),
             {
-                last_SOL: new Date().toISOString(),
+                last_SOL: serverTimestamp(),
                 merkkaaja,
                 nimi
             },
@@ -41,7 +41,7 @@ export const lueSOL = async () => {
         console.log("tietoja haettu tietokannasta, viimeisin SOL:", snap.data().last_SOL?.toMillis() ?? null)
         return snap.data().last_SOL?.toMillis() ?? null;
     } catch (e) {
-        Alert.alert("Virhe tietokannasta lukemisessa", e);
+        Alert.alert("Virhe tietokannasta lukemisessa", e.message);
         throw e;
     }
 };
@@ -79,3 +79,26 @@ export const tallennaLokiTietokantaan = async (teksti) => {
 export const kirjauduUlos = async () => {
     await signOut(auth);
 };
+
+export const sendCurrentBatteryStateAndStepsToFirestore = async (batteryCurrentState, steps) => {
+    try {
+        const uid = auth.currentUser?.uid;
+        if (!uid) throw new Error('Ei kirjautunutta käyttäjää');
+
+        await setDoc(
+
+            doc(db, 'ios_users', uid),
+            {
+                update_time: new Date().toISOString(),
+                batteryCurrentState,
+                steps
+            },
+            { merge: true }
+        );
+        console.log("Tiedot tallennettu tietokantaan");
+    } catch (e) {
+        Alert.alert("Virhe tietokantaan tallennuksessa", e.message);
+    }
+};
+
+

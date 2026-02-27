@@ -2,7 +2,7 @@ import { ActivityIndicator, Alert, Button, Modal, Platform, ScrollView, StyleShe
 import UserSettings from './components/userSettings';
 import Login from './components/login';
 import { useEffect, useState } from 'react';
-import { kirjauduUlos, lueSOL, tallennaLokiTietokantaan, tallennaSOL } from './components/firestoreService';
+import { kirjauduUlos, lueSOL, tallennaLokiTietokantaan, tallennaSOL, sendCurrentBatteryStateAndStepsToFirestore } from './components/firestoreService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,66 +32,23 @@ const odotaKayttajaa = () => {
 messaging().setBackgroundMessageHandler(async remoteMessage => {
   if (remoteMessage.data && remoteMessage.data.task === "background-fetch-task") {
     const nowStr = new Date().toLocaleTimeString();
-
-    // 1. Haetaan vanha loki ja alustetaan currentLog
-    const oldDebug = await AsyncStorage.getItem('DEBUG_SILENT_PUSH') || '';
-    let currentLog = oldDebug + `\n[${nowStr}] Herätys (Firebase)!`;
-
-    // Tallennetaan heti ensimmäinen herätysmerkintä
-    await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
-
     try {
-      // 1. ODOTETAAN KÄYTTÄJÄÄ ENNEN TIETOKANTAKUTSUJA
+      // ODOTETAAN KÄYTTÄJÄÄ ENNEN TIETOKANTAKUTSUJA
       const user = await odotaKayttajaa();
-      if (!user) {
-        currentLog += `\n[${nowStr}] ❌ Virhe: Ei Auth-käyttäjää taustalla.`;
-        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
-        return;
-      }
-
-      await tallennaLokiTietokantaan("Havaittu: Turvatarkistus (Push)");
-
-      // 2. TARKISTETAAN LIIKE/AKKU
-      const batteryActive = await checkBatterySOL();
-
-      if (batteryActive) {
-        await tallennaLokiTietokantaan(`Havaittu: Muutos akun tilassa`);
-        currentLog += `\n[${nowStr}] Havaittu: Muutos akun tilassa`;
-        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
-
-        //await tallennaSOL();
-        //await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'true');
-      } else {
-        await tallennaLokiTietokantaan(`Havaittu: Ei muutoksia akun tilassa, tarkistetaan askeleet`);
-        currentLog += `\n[${nowStr}] Havaittu: Ei muutoksia akun tilassa, tarkistetaan askeleet`;
-        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
-
-        const steps = await getTodaysStepCount();
-        if (steps > 10) {
-          //await tallennaSOL();
-          //await AsyncStorage.setItem('IOS_IS_ALIVE_TODAY', 'true');
-
-          await tallennaLokiTietokantaan(`Havaittu: Liike (${steps})`);
-          currentLog += `\n[${nowStr}] Havaittu: Liike (${steps})`; // Sulku korjattu
-          await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
-        } else {
-          await tallennaLokiTietokantaan(`Havaittu: Ei tarpeeksi askelia (${steps}), uusi tarkistus myöhemmin`);
-          currentLog += `\n[${nowStr}] Havaittu: Ei tarpeeksi askelia (${steps}), uusi tarkistus myöhemmin`;
-          await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
-        }
-      }
+      if (!user) return;
+      // TARKISTETAAN AKUN TILA, ASKELMÄÄRÄ JA TALLENNETAAN NE TIETOKANTAAN
+      const batteryCurrentState = await Battery.getBatteryStateAsync();
+      const steps = await getTodaysStepCount();
+      await sendCurrentBatteryStateAndStepsToFirestore(batteryCurrentState, steps);
+      await tallennaLokiTietokantaan("Turvatarkistus. Akku:", batteryCurrentState,"askeleet:",steps);
     } catch (e) {
       console.error("Task error:", e);
       await tallennaLokiTietokantaan(`CRASH: ${e.message}`);
-
-      currentLog += `\n[${nowStr}] CRASH: ${e.message}`;
-      await AsyncStorage.setItem('DEBUG_SILENT_PUSH', currentLog);
     }
   } else {
     console.log("Saatiin muu taustaviesti, ei tehdä turvatarkistusta:", remoteMessage);
   }
 });
-
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -106,78 +63,6 @@ Notifications.setNotificationHandler({
     console.warn("Virhe taustaviestin käsittelyssä:", error);
   }
 });
-
-// Apufunktio ajan hakemiseen
-const fetchTime = () => {
-  const now = new Date();
-  const pad = (n) => n < 10 ? '0' + n : n;
-  return `${pad(now.getDate())}.${pad(now.getMonth() + 1)} klo ${pad(now.getHours())}.${pad(now.getMinutes())}`;
-}
-
-// Apufunktio logituksen kirjoittamista varten
-const writeAsyncLog = async (msg, events = false) => {
-  try {
-    if (events) {
-      const raw = await AsyncStorage.getItem('IOS_NUMB_OF_TRANSACTIONS');
-      const earlierEvents = Number(raw) || 0;
-      const newEvents = earlierEvents + 1;
-      await AsyncStorage.setItem('IOS_NUMB_OF_TRANSACTIONS', String(newEvents));
-    }
-    const oldLog = JSON.parse((await AsyncStorage.getItem('IOS_ALIVE_LOG')) ?? '[]')
-    if (oldLog.length > 30) oldLog.shift();
-    oldLog.push({ time: fetchTime(), eventNote: msg });
-    await AsyncStorage.setItem('IOS_ALIVE_LOG', JSON.stringify(oldLog));
-  } catch (e) {
-    console.log(e);
-  }
-}
-
-// Akun tilat
-const BATTERY_STATES = {
-  [Battery.BatteryState.UNKNOWN]: 'UNKNOWN (0)',
-  [Battery.BatteryState.UNPLUGGED]: 'UNPLUGGED (1)',
-  [Battery.BatteryState.CHARGING]: 'CHARGING (2)',
-  [Battery.BatteryState.FULL]: 'FULL (3)',
-};
-
-// Funktio akun tilanmuutoksen tarkistuksesta
-const checkBatterySOL = async () => {
-  try {
-    console.log("[checkBatterySOL] aloitus")
-    const currentState = await Battery.getBatteryStateAsync();
-    const lastStateStr = await AsyncStorage.getItem('IOS_ALIVE_LAST_BATTERY_STATE');
-    await AsyncStorage.setItem('IOS_ALIVE_LAST_BATTERY_STATE', String(currentState));
-
-    if (!lastStateStr) return false;
-
-    const lastState = parseInt(lastStateStr, 10);
-
-    if (currentState === Battery.BatteryState.UNKNOWN || lastState === Battery.BatteryState.UNKNOWN) {
-      return false;
-    }
-
-    const isChargingOrFull = (state) =>
-      state === Battery.BatteryState.CHARGING || state === Battery.BatteryState.FULL;
-
-    if (isChargingOrFull(lastState) && isChargingOrFull(currentState)) {
-      return false;
-    }
-
-    if (lastState !== currentState) {
-      const fromName = BATTERY_STATES[lastState] || lastState;
-      const toName = BATTERY_STATES[currentState] || currentState;
-      const msg = `BatterySOL: ${fromName} -> ${toName} (User is alive)`;
-      console.log(msg);
-      await writeAsyncLog(msg, true);
-      return true;
-    }
-
-  } catch (e) {
-    console.log("[checkBatterySOL] error", e);
-  }
-  return false;
-}
-
 
 const healthKitOptions = {
   permissions: {
@@ -253,10 +138,6 @@ export default function App() {
       // Jos viesti on meidän palvelimen lähettämä hiljainen "Turvatarkistus"
       if (remoteMessage.data && remoteMessage.data.task === "background-fetch-task") {
         tallennaLokiTietokantaan("Turvatarkistus testi (Etuala)");
-        const nowStr = new Date().toLocaleTimeString();
-        const oldDebug = await AsyncStorage.getItem('DEBUG_SILENT_PUSH') || '';
-        await AsyncStorage.setItem('DEBUG_SILENT_PUSH', oldDebug + `\n[${nowStr}] Turvatarkistus testi (Etuala)`);
-
         // Poistetaan mahdolliset häiriöt ruudulta
         await Notifications.dismissAllNotificationsAsync();
       }
@@ -533,10 +414,6 @@ export default function App() {
     activateMonitoring()
   }
 
-  const showDebugLog = async () => {
-    const log = await AsyncStorage.getItem('DEBUG_SILENT_PUSH');
-    Alert.alert("Silent Push Debug", log || "Ei lokimerkintöjä");
-  };
 
   if (loading) return <ActivityIndicator size="large" style={styles.loadingContainer} />
   if (!user) return <Login />;
@@ -717,7 +594,7 @@ export default function App() {
         </View>
         <Button title="Näytä StorageData" onPress={showStorageData} />
         <Button title="Hae viimeisin SOL" onPress={readSOL} />
-        <Button title="Lue Debug-loki" color="red" onPress={showDebugLog} />
+        
         <Toast />
       </ScrollView>
     </SafeAreaView>

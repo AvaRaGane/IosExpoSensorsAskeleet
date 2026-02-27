@@ -2,8 +2,11 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const serviceAccount = require("./serviceAccountKey.json");
 
+const { checkBatterySOL, checkStepsSOL, addUpdateToSOLBatchRun } = require("./signalOfLifeService");
+const { createSilentPushNotification, sendSilentPushNotifications } = require("./notificationService")
+
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount)
 });
 const db = admin.firestore();
 
@@ -12,71 +15,57 @@ exports.tarkistaElonmerkit = onSchedule("every 30 minutes", async (event) => {
     const usersRef = db.collection("ios_users");
     const snapshot = await usersRef.get();
 
-    const VAROITUS_RAJA = 0.5 * 60 * 60 * 1000; // 30 min
+    const TARKISTUS_RAJA = 0.583 * 60 * 60 * 1000; // 35min
+    const VAROITUS_RAJA = 23 * 60 * 60 * 1000; // 23h
     const HÄLYTYS_RAJA = 24 * 60 * 60 * 1000; // 24h
 
-    // Firebasessa viestit kerätään taulukkoon
+    // tyhjä taulukko viestejä varten
     const messages = [];
+    const batch = db.batch();
+    let somethingToSave = false;
+
 
     for (const doc of snapshot.docs) {
         const userData = doc.data();
         const userId = doc.id;
 
-        if (!userData.last_SOL || !userData.pushToken) continue;
+        if (!userData.last_SOL || !userData.pushToken || userData.emergencyMessageSent) continue;
 
         const lastSeen = userData.last_SOL.toDate();
         const timeDiff = now - lastSeen;
 
-        // Varmistetaan, ettei token ole enää Expon vanha token
-        if (userData.pushToken.includes("ExponentPushToken")) {
-            console.log(`Ohitettaan vanha Expo-token käyttäjällä ${userId}`);
+        const batterySOL = checkBatterySOL(userData.batteryCurrentState, userData.batteryPreviousState);
+        const stepsSOL = checkStepsSOL(userData.currentSteps, userData.previousSteps);
+
+        if (batterySOL || stepsSOL) {
+            addUpdateToSOLBatchRun(admin, batch, db, userId, userData.batteryCurrentState, userData.currentSteps);
+            somethingToSave = true;
             continue;
         }
 
-        if (timeDiff > HÄLYTYS_RAJA) {
+        /*if (timeDiff > HÄLYTYS_RAJA) {
             console.log(`HÄLYTYS: Käyttäjä ${userId} ei vastannut 24h!`);
+            //tekstiviestit, push notifikaatio ja tietokantaan merkintä viestistä (emergencyMessageSent)
             continue;
-        }
+        }*/
 
-        if (timeDiff > VAROITUS_RAJA) {
+        /*if (timeDiff > VAROITUS_RAJA) {
+            console.log(`HÄLYTYS: Käyttäjä ${userId} ei vastannut 23h!`);
+            // push notifikaatio varoituksena, että on tunti aikaa reagoida, jonka jälkeen lähetetään hätäyhteytiedolle tekstiviesti.
+            continue;
+        }*/
+
+        if (timeDiff > TARKISTUS_RAJA) {
             console.log(`HILJAINEN HERÄTYS: Käyttäjä ${userId}`);
-            
-            messages.push({
-                token: userData.pushToken,
-                data: {
-                    task: "background-fetch-task"
-                },
-                apns: {
-                    headers: {
-                        "apns-priority": "5",
-                        "apns-push-type": "background" // TÄMÄ ON PAKOLLINEN iOS:lle!
-                    },
-                    payload: {
-                        aps: {
-                            contentAvailable: true // Firebase Admin käyttää tätä muotoa
-                        }
-                    }
-                }
-            });
+            createSilentPushNotification(userData.pushToken);
         }
+
     }
 
-    // Lähetetään viestit Firebasen kautta
-    if (messages.length > 0) {
-        try {
-            const response = await admin.messaging().sendEach(messages);
-            console.log(`Viestierä lähetetty. Onnistui: ${response.successCount}, Epäonnistui: ${response.failureCount}`);
-
-            // LISÄTTY LOKITUS: Katsotaan MIKSI se epäonnistui
-            if (response.failureCount > 0) {
-                response.responses.forEach((resp, idx) => {
-                    if (!resp.success) {
-                        console.error(`Syy viestin ${idx} epäonnistumiseen:`, resp.error);
-                    }
-                });
-            }
-        } catch (error) {
-            console.error("Virhe FCM-lähetyksessä:", error);
-        }
+    if (somethingToSave) {
+        await batch.commit();
+        console.log("Kaikki elonmerkit päivitetty kantaan kerralla.");
     }
+
+    await sendSilentPushNotifications(admin, messages);
 });
