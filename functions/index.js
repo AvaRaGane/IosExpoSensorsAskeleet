@@ -57,7 +57,7 @@ exports.tarkistaElonmerkit = onSchedule("every 30 minutes", async (event) => {
 
         if (timeDiff > TARKISTUS_RAJA) {
             console.log(`HILJAINEN HERÄTYS: Käyttäjä ${userId}`);
-            createSilentPushNotification(userData.pushToken);
+            messages.push(createSilentPushNotification(userData.pushToken));
         }
 
     }

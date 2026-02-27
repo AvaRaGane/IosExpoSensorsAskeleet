@@ -31,16 +31,21 @@ const odotaKayttajaa = () => {
 // Firebase taustakuuntelija
 messaging().setBackgroundMessageHandler(async remoteMessage => {
   if (remoteMessage.data && remoteMessage.data.task === "background-fetch-task") {
-    const nowStr = new Date().toLocaleTimeString();
     try {
-      // ODOTETAAN KÄYTTÄJÄÄ ENNEN TIETOKANTAKUTSUJA
+      // ODOTETAAN KÄYTTÄJÄÄ
       const user = await odotaKayttajaa();
       if (!user) return;
-      // TARKISTETAAN AKUN TILA, ASKELMÄÄRÄ JA TALLENNETAAN NE TIETOKANTAAN
+      
+      // HAETAAN DATA
       const batteryCurrentState = await Battery.getBatteryStateAsync();
       const steps = await getTodaysStepCount();
-      await sendCurrentBatteryStateAndStepsToFirestore(batteryCurrentState, steps);
-      await tallennaLokiTietokantaan("Turvatarkistus. Akku:", batteryCurrentState,"askeleet:",steps);
+      
+      // TALLENNETAAN TIETOKANTAAN
+      await sendCurrentBatteryStateAndStepsToFirestore(user.uid, batteryCurrentState, steps);
+      
+      // LOKITUS 
+      await tallennaLokiTietokantaan(`Turvatarkistus. Akku: ${batteryCurrentState}, askeleet: ${steps}`);
+      
     } catch (e) {
       console.error("Task error:", e);
       await tallennaLokiTietokantaan(`CRASH: ${e.message}`);

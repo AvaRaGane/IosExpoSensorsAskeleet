@@ -80,25 +80,27 @@ export const kirjauduUlos = async () => {
     await signOut(auth);
 };
 
-export const sendCurrentBatteryStateAndStepsToFirestore = async (batteryCurrentState, steps) => {
+export const sendCurrentBatteryStateAndStepsToFirestore = async (uid, batteryCurrentState, steps) => {
     try {
-        const uid = auth.currentUser?.uid;
-        if (!uid) throw new Error('Ei kirjautunutta käyttäjää');
+        if (!uid) throw new Error('Ei UID:ta annettu tallennukseen');
 
-        await setDoc(
+        // Luodaan objekti, johon laitetaan aina vähintään akku ja aika
+        const dataToSave = {
+            update_time: new Date().toISOString(),
+            batteryCurrentState: batteryCurrentState
+        };
 
-            doc(db, 'ios_users', uid),
-            {
-                update_time: new Date().toISOString(),
-                batteryCurrentState,
-                steps
-            },
-            { merge: true }
-        );
-        console.log("Tiedot tallennettu tietokantaan");
+        // Tallennetaan askeleet kantaan VAIN jos niitä on oikeasti saatu.
+        // Näin emme ylikirjoita aamun askeleita nollalla, kun puhelin on taskussa.
+        if (steps !== null && steps > 0) {
+            dataToSave.currentSteps = steps; 
+        }
+
+        // Lähetetään data Firebaseen
+        await setDoc(doc(db, 'ios_users', uid), dataToSave, { merge: true });
+        console.log("Tiedot tallennettu tietokantaan:", dataToSave);
+
     } catch (e) {
-        Alert.alert("Virhe tietokantaan tallennuksessa", e.message);
+        console.error("Virhe tietokantaan tallennuksessa:", e.message);
     }
 };
-
-
