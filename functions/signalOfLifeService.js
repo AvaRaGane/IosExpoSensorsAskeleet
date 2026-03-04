@@ -25,12 +25,12 @@ const checkStepsSOL = (currentSteps, previousSteps) => {
     return currentSteps > previousSteps;
 };
 
-const addUpdateToSOLBatchRun = (admin, batch, db, userId, batteryState, steps) => {
+const addSOLUpdateToBatch = ({admin, batch, db, userId, batteryState, steps}) => {
     const userRef = db.collection('ios_users').doc(userId);
 
     batch.update(userRef, {
-        batteryPreviousState: batteryState,
-        previousSteps: steps,
+        batteryPreviousState: batteryState ?? 0,
+        previousSteps: steps ?? 0,
         last_SOL: admin.firestore.FieldValue.serverTimestamp()
     })
 }
@@ -38,5 +38,5 @@ const addUpdateToSOLBatchRun = (admin, batch, db, userId, batteryState, steps) =
 module.exports = {
     checkBatterySOL,
     checkStepsSOL,
-    addUpdateToSOLBatchRun
+    addSOLUpdateToBatch
 };

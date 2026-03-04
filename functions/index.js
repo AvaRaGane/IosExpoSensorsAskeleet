@@ -2,13 +2,15 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const serviceAccount = require("./serviceAccountKey.json");
 
-const { checkBatterySOL, checkStepsSOL, addUpdateToSOLBatchRun } = require("./signalOfLifeService");
+const { checkBatterySOL, checkStepsSOL, addSOLUpdateToBatch } = require("./signalOfLifeService");
 const { createSilentPushNotification, sendSilentPushNotifications } = require("./notificationService")
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
 });
 const db = admin.firestore();
+
+db.settings({ ignoreUndefinedProperties: true });
 
 exports.tarkistaElonmerkit = onSchedule("every 30 minutes", async (event) => {
     const now = new Date();
@@ -37,8 +39,17 @@ exports.tarkistaElonmerkit = onSchedule("every 30 minutes", async (event) => {
         const batterySOL = checkBatterySOL(userData.batteryCurrentState, userData.batteryPreviousState);
         const stepsSOL = checkStepsSOL(userData.currentSteps, userData.previousSteps);
 
+        const updateParams = {
+            admin, 
+            batch,
+            db,
+            userId,
+            batteryState: userData.batteryCurrentState,
+            steps: userData.currentSteps
+        }
+
         if (batterySOL || stepsSOL) {
-            addUpdateToSOLBatchRun(admin, batch, db, userId, userData.batteryCurrentState, userData.currentSteps);
+            addSOLUpdateToBatch(updateParams);
             somethingToSave = true;
             continue;
         }
