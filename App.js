@@ -35,17 +35,17 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
       // ODOTETAAN KÄYTTÄJÄÄ
       const user = await odotaKayttajaa();
       if (!user) return;
-      
+
       // HAETAAN DATA
       const batteryCurrentState = await Battery.getBatteryStateAsync();
       const steps = await getTodaysStepCount();
-      
+
       // TALLENNETAAN TIETOKANTAAN
       await sendCurrentBatteryStateAndStepsToFirestore(user.uid, batteryCurrentState, steps);
-      
+
       // LOKITUS 
       await tallennaLokiTietokantaan(`Turvatarkistus. Akku: ${batteryCurrentState}, askeleet: ${steps}`);
-      
+
     } catch (e) {
       console.error("Task error:", e);
       await tallennaLokiTietokantaan(`CRASH: ${e.message}`);
@@ -355,7 +355,9 @@ export default function App() {
         'IOS_NUMB_OF_TRANSACTIONS',
         'IOS_ALIVE_LOG',
         'IOS_ALIVE_LAST_BATTERY_STATE',
-        'SOLO_FIRST_TIME_INIT',
+        'IOS_ACTIVATEMONITORING',
+        'IOS_SOLO_SUBSCRIBE',
+        'phone',
       ]);
 
       setSOL(null);
@@ -599,7 +601,7 @@ export default function App() {
         </View>
         <Button title="Näytä StorageData" onPress={showStorageData} />
         <Button title="Hae viimeisin SOL" onPress={readSOL} />
-        
+
         <Toast />
       </ScrollView>
     </SafeAreaView>

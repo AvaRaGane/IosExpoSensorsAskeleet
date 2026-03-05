@@ -1,6 +1,6 @@
 import { auth } from './firebase';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithCredential } from "firebase/auth";
-import { View, Text, TextInput, Button, Alert, StyleSheet, Switch } from 'react-native'
+import { View, Text, TextInput, Button, Alert, StyleSheet, KeyboardAvoidingView, ScrollView, Platform } from 'react-native'
 import { useEffect, useRef, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -71,14 +71,24 @@ const Login = () => {
     const secondPasswordRef = useRef(null);
 
     return (
-        <View style={{ flex: 1 }}>
-            <View style={styles.container}>
+        <KeyboardAvoidingView
+            style={{ flex: 1, backgroundColor: '#fff' }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+            <ScrollView
+                contentContainerStyle={[
+                    styles.container,
+                    { paddingTop: showRegister ? 40 : 100 }
+                ]}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+            >
                 {/* Otsikko vaihtuu tilan mukaan */}
                 <Text style={styles.label}>
                     {showRegister ? 'Luo uusi tili' : 'Kirjaudu sisään'}
                 </Text>
 
-                {/* YKSI painike, jonka teksti vaihtuu. Tämä on vakaampi kuin kaksi eri painiketta. */}
+                {/* YKSI painike, jonka teksti vaihtuu */}
                 <Button
                     title={showRegister ? "Onko sinulla jo tili? Kirjaudu" : "Ei vielä tiliä? Rekisteröidy"}
                     onPress={toggleRegister}
@@ -86,7 +96,7 @@ const Login = () => {
 
                 {/* Renderöidään lisäkentät vain jos showRegister on true */}
                 {showRegister && (
-                    <View style={{ alignItems: 'center' }}>
+                    <View style={{ alignItems: 'center', width: '100%' }}>
                         <Text>Etunimi</Text>
                         <TextInput
                             onChangeText={setEtunimi}
@@ -161,17 +171,18 @@ const Login = () => {
                 ) : (
                     <Button title="Kirjaudu" onPress={kirjaudu} disabled={isLoginDisabled} />
                 )}
-            </View>
-        </View>
-    );
+            </ScrollView>
+        </KeyboardAvoidingView>
+    )
 }
 
 const styles = StyleSheet.create({
     container: {
-        flex: 1,
+
+        flexGrow: 1,
         backgroundColor: '#fff',
         alignItems: 'center',
-        marginTop: 100
+        paddingBottom: 40,
     },
     input: {
         height: 40,
@@ -180,13 +191,11 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         padding: 10,
     },
-    scrollView: {
-        backgroundColor: 'pink',
-
-    },
-    text: {
-        padding: 12,
-    },
+    label: {
+        fontSize: 24,
+        fontWeight: 'bold',
+        marginBottom: 10,
+    }
 });
 
 export default Login
