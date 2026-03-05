@@ -1,4 +1,4 @@
-import { View, Text, Button, Modal, TextInput, Alert, Switch, FlatList, TouchableOpacity, StyleSheet } from 'react-native'; import { useEffect, useRef, useState } from 'react'
+import { View, Text, Button, Modal, TextInput, Alert, Switch, FlatList, TouchableOpacity, StyleSheet, Linking } from 'react-native'; import { useEffect, useRef, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import Contacts from 'react-native-contacts';
 import Toast from 'react-native-toast-message';
@@ -73,6 +73,21 @@ const UserSettings = ({ setShowUserSettings, monitoring, setMonitoring, subscrib
 
         if (permission === 'authorized') {
             loadContacts();
+        } else {
+            Alert.alert(
+             "Yhteystietojen käyttöoikeus",
+                "Sovellus tarvitsee pääsyn yhteystietoihisi, jotta voit valita hätäyhteyshenkilön. Haluatko sallia sen laitteen asetuksista?",
+                [
+                    { 
+                        text: "Peruuta", 
+                        style: "cancel" 
+                    },
+                    { 
+                        text: "Avaa Asetukset", 
+                        onPress: () => Linking.openSettings() 
+                    }
+                ]
+            );
         }
     };
 
